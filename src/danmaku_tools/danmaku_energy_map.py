@@ -5,7 +5,7 @@
 #   Update on 20220219 by @kumafans (Bilibili ID: OneTwoInfinity)
 #       - Use IDF-weighted keyword value to rate danmaku
 #       - Add markers for Super Chat
-#       - Eliminated the empirical 45 second offset in most decisions
+#       - Eliminated the empirical 45-second offset in most decisions
 #
 ####
 
@@ -24,7 +24,7 @@ import numpy as np
 from scipy.ndimage.filters import convolve
 from scipy.stats import halfnorm
 
-from danmaku_tools.danmaku_tools import read_danmaku_file, get_value, get_time
+from danmaku_tools import read_danmaku_file, get_value, get_time
 
 import jieba
 from collections import Counter
@@ -53,9 +53,7 @@ parser.add_argument('--regex_rules', type=str, default=None, help='[for he label
                                                                   'leave empty if not needed')
 
 
-
 def preprocess_danmaku(danmaku):
-
     """
     Some ad-hoc processing for danmaku with repeated patterns
     to allow more consistent word splitting by jieba,
@@ -70,7 +68,7 @@ def preprocess_danmaku(danmaku):
     if args.regex_rules is not None:
         for line in open(args.regex_rules, 'r', encoding='utf-8'):
             line = line.strip().split()
-            assert(len(line) == 2)
+            assert (len(line) == 2)
             a = danmaku
             danmaku = re.sub(r"{}".format(line[0]), line[1], danmaku)
     if danmaku == None:
@@ -79,7 +77,6 @@ def preprocess_danmaku(danmaku):
 
 
 def gen_slice_wordcount(danmaku_slices):
-
     """
     Count the occurence of words in each danmaku slice
 
@@ -93,7 +90,6 @@ def gen_slice_wordcount(danmaku_slices):
 
 
 def gen_idf_dict(wordcount_slices):
-
     """
     Generate the inverse document frequency (IDF) for all words
     that occurs in the xml (danmaku file)
@@ -109,13 +105,12 @@ def gen_idf_dict(wordcount_slices):
 
     for word in all_words:
         idf_list[word] = math.log(len(wordcount_slices)
-                  /  (1+ sum(1 for slice in wordcount_slices if word in slice)))
+                                  / (1 + sum(1 for slice in wordcount_slices if word in slice)))
 
     return idf_list
 
 
 def gen_danmaku_slices(all_children, interval=1):
-
     """
     Convert the danmaku list into slices with the prespecified interval
 
@@ -128,19 +123,18 @@ def gen_danmaku_slices(all_children, interval=1):
     """
     interval = int(interval)
     final_time = get_time(all_children[-1])
-    slices = [[] for i in range(int(final_time)//int(interval) + 3)]
+    slices = [[] for i in range(int(final_time) // int(interval) + 3)]
 
     for child in all_children:
         if child.tag == 'd':
-            if json.loads(child.attrib['raw'])[0][5] != 0: ### not lucky draw danmaku
-                if int(get_time(child))//interval < len(slices):
-                    slices[int(get_time(child))//interval].append(preprocess_danmaku(child.text))
+            if json.loads(child.attrib['raw'])[0][5] != 0:  ### not lucky draw danmaku
+                if int(get_time(child)) // interval < len(slices):
+                    slices[int(get_time(child)) // interval].append(preprocess_danmaku(child.text))
 
     return slices
 
 
 def get_danmaku_value(cur_danmaku, idf_list):
-
     """
     Get the IDF-weighted value of a given danmaku
 
@@ -153,7 +147,7 @@ def get_danmaku_value(cur_danmaku, idf_list):
     """
     danmaku_value = 0
     if cur_danmaku.tag == 'd':
-        if json.loads(cur_danmaku.attrib['raw'])[0][5] != 0: ### not lucky draw danmaku
+        if json.loads(cur_danmaku.attrib['raw'])[0][5] != 0:  ### not lucky draw danmaku
             for word in jieba.cut(preprocess_danmaku(cur_danmaku.text)):
                 danmaku_value += idf_list[word]
 
@@ -225,12 +219,14 @@ def get_heat_time(all_children, idf_list):
                 he_start = -1
             else:
                 if heat_value_gaussian[i] / np.sqrt(heat_value_gaussian2[i]) > cur_highest:
-                    cur_highest = heat_value_gaussian[i] / np.sqrt(heat_value_gaussian2[i])  ### changed to match with the graph
+                    cur_highest = heat_value_gaussian[i] / np.sqrt(
+                        heat_value_gaussian2[i])  ### changed to match with the graph
                     highest_idx = i
         else:
             assert he_start == -1
             if heat_value_gaussian[i] > heat_value_gaussian2[i]:
-                cur_highest = heat_value_gaussian[i] / np.sqrt(heat_value_gaussian2[i])  ### changed to match with the graph
+                cur_highest = heat_value_gaussian[i] / np.sqrt(
+                    heat_value_gaussian2[i])  ### changed to match with the graph
                 highest_idx = i
                 he_start = i
 
@@ -327,19 +323,20 @@ def draw_he_annotate_line(ax: plt.Axes, current_time: float, heat_time, he_point
         ax.axline((time, height), (time, height - 1), color='#cc79a7c0')
 
 
-def draw_he(he_graph, heat_time, heat_value_gaussian, heat_value_gaussian2, he_points, he_range, current_time=-1, sc_tuple=None):
+def draw_he(he_graph, heat_time, heat_value_gaussian, heat_value_gaussian2, he_points, he_range, current_time=-1,
+            sc_tuple=None):
     # sc_tuple = (time, price, message, user, duration)
     fig = plt.figure(figsize=(16, 1), frameon=False, dpi=60)
     ax = fig.add_axes((0, 0, 1, 1))
     draw_he_area(ax, current_time, heat_time, heat_value_gaussian, heat_value_gaussian2)
     # draw_he_annotate_line(ax, current_time, heat_time, he_points)
     if sc_tuple is not None and (len(sc_tuple) != 0):
-        height = min(heat_value_gaussian) + 0.1*(max(heat_value_gaussian)-min(heat_value_gaussian))
+        height = min(heat_value_gaussian) + 0.1 * (max(heat_value_gaussian) - min(heat_value_gaussian))
         for sc in sorted(sc_tuple, key=lambda x: int(x[1])):
             # Order the SCs by price before plotting to prevent the expensive SCs being covered by cheaper ones
             sc_price = int(sc[1])
             if sc_price < 50:
-                sc_color = (42,96,178)
+                sc_color = (42, 96, 178)
             elif sc_price < 100:
                 sc_color = (66, 125, 158)
             elif sc_price < 500:
@@ -350,7 +347,7 @@ def draw_he(he_graph, heat_time, heat_value_gaussian, heat_value_gaussian2, he_p
                 sc_color = (229, 77, 77)
             else:
                 sc_color = (171, 26, 50)
-            plt.scatter(sc[0], height, s=75, c=[[rgb/255.0 for rgb in sc_color]])
+            plt.scatter(sc[0], height, s=75, c=[[rgb / 255.0 for rgb in sc_color]])
     plt.xlim(heat_time[0][0], heat_time[0][-1])
     plt.ylim(min(heat_value_gaussian), max(heat_value_gaussian))
 
@@ -382,13 +379,12 @@ def segment_text(text):
 
 def get_danmaku_from_range(all_children, he_range):
     start, end = he_range
-#    start += 45
-#    end += 45
+    #    start += 45
+    #    end += 45
     return [item.text for item in all_children if item.tag == 'd' and start <= get_time(item) <= end]
 
 
 def find_keywords(wordcount_slices, idf_list, he_range, n_keys=3):
-
     """
     Identify the top keywords for a given high energy slice
 
@@ -401,7 +397,7 @@ def find_keywords(wordcount_slices, idf_list, he_range, n_keys=3):
     Returns:
     a list of top keywords in the specified high energy range
     """
-    he_window = sum(wordcount_slices[he_range[0]:he_range[1]+1], Counter())   # Empirical offset (45s) removed
+    he_window = sum(wordcount_slices[he_range[0]:he_range[1] + 1], Counter())  # Empirical offset (45s) removed
     word_importance = {}
     for word in he_window:
         if word == ' ':
@@ -412,8 +408,25 @@ def find_keywords(wordcount_slices, idf_list, he_range, n_keys=3):
 
 
 
-if __name__ == '__main__':
-    args = parser.parse_args()
+def init_args(input_file_path, he_png_path, he_list_path, sc_list_path, sc_srt_path, he_time_path, he_range_path):
+    parser = argparse.ArgumentParser(description='Process bilibili Danmaku')
+    parser.add_argument('danmaku', type=str, default=input_file_path, help='path to the danmaku file')
+    parser.add_argument('--graph', type=str, default=he_png_path,
+                        help='output graph path, leave empty if not needed')
+    parser.add_argument('--he_map', type=str, default=he_list_path,
+                        help='output high density timestamp, leave empty if not needed')
+    parser.add_argument('--sc_list', type=str, default=sc_list_path,
+                        help='output super chats, leave empty if not needed')
+    parser.add_argument('--sc_srt', type=str, default=sc_srt_path, help='output super chats srt, leave empty if not needed')
+    parser.add_argument('--he_time', type=str, default=he_time_path,
+                        help='output highest density timestamp, leave empty if not '
+                             'needed')
+    parser.add_argument('--he_range', type=str, default=he_range_path, help='output he_range, leave empty if not needed')
+
+    return parser.parse_args()
+
+
+def energy_map(args):
     xml_list = read_danmaku_file(args.danmaku)
 
     if args.sc_list is not None or args.sc_srt is not None:
@@ -448,7 +461,6 @@ if __name__ == '__main__':
             subtitles = []
             cur_time = 0
 
-
             def display_sc(start, end, sc_list):
                 display_sorted_sc = sorted(sc_list, key=lambda x: (-float(x[0]), -int(x[2])))
                 content = "\n".join([sc[3] for sc in display_sorted_sc])
@@ -461,7 +473,6 @@ if __name__ == '__main__':
                     end=timedelta(seconds=end),
                     content=content
                 )
-
 
             def flush_sc(start_time: float, end_time: float):
                 current_sc = sorted(active_sc, key=lambda x: x[1])
@@ -480,7 +491,6 @@ if __name__ == '__main__':
                     subtitle_list += [display_sc(start_time, end_time, current_sc)]
                     start_time = end_time
                 return current_sc, subtitle_list, start_time
-
 
             for time, price, message, user, duration in sc_tuple:
                 start = time
@@ -525,9 +535,9 @@ if __name__ == '__main__':
                         element = next(xml_list_iter)
                     except StopIteration:
                         break
-                    if get_time(element) <= start + 0:    # Empirical offset (45s) removed
+                    if get_time(element) <= start + 0:  # Empirical offset (45s) removed
                         continue
-                    if get_time(element) > end + 0:    # Empirical offset (45s) removed
+                    if get_time(element) > end + 0:  # Empirical offset (45s) removed
                         break
                     if element.tag == 'd':
                         text = element.text
@@ -561,7 +571,8 @@ if __name__ == '__main__':
                     text += f"\n {convert_time(start_he_time)} - {convert_time(end_he_time)}\t{heat_comments[i]}\t"
                     text += "("
                     text += ",".join([kw for kw, value in \
-                            find_keywords(wordcount_slices, idf_list, (start_he_time, end_he_time), n_keys=3)])
+                                      find_keywords(wordcount_slices, idf_list, (start_he_time, end_he_time),
+                                                    n_keys=3)])
                     text += ")"
 
             text += "\n"
@@ -592,7 +603,6 @@ if __name__ == '__main__':
         tree = ET.parse(args.danmaku)
         user_cache = {}
 
-
         def get_user_follower(user_id):
             if user_id in user_cache:
                 return user_cache[user_id]
@@ -601,7 +611,6 @@ if __name__ == '__main__':
                 user_follower = bilibili_api.user.get_relation_info(user_id)['follower']
                 user_cache[user_id] = user_follower
                 return user_follower
-
 
         for child in tqdm(tree.getroot()):
             try:
@@ -621,3 +630,8 @@ if __name__ == '__main__':
                 print(e)
                 print(traceback.format_exc())
         tree.write(args.user_xml, encoding='UTF-8', xml_declaration=True)
+
+
+if __name__ == '__main__':
+    args = parser.parse_args()
+    energy_map(args)
