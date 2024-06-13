@@ -3,7 +3,7 @@
 import argparse
 import json
 
-from danmaku_tools import read_danmaku_file, get_value
+from danmaku_tools.danmaku_tools import read_danmaku_file, get_value
 
 parser = argparse.ArgumentParser(description='Get gift analytics for BiliBili Live XML')
 parser.add_argument('danmaku', type=str, help='path to the danmaku file')

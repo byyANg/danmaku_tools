@@ -24,7 +24,7 @@ import numpy as np
 from scipy.ndimage.filters import convolve
 from scipy.stats import halfnorm
 
-from danmaku_tools import read_danmaku_file, get_value, get_time
+from danmaku_tools.danmaku_tools import read_danmaku_file, get_value, get_time
 
 import jieba
 from collections import Counter
@@ -407,6 +407,226 @@ def find_keywords(wordcount_slices, idf_list, he_range, n_keys=3):
     return sorted(word_importance.items(), key=operator.itemgetter(1))[-n_keys:][::-1]
 
 
+def init_params(input_file_path, he_png_path, he_list_path, sc_list_path, sc_srt_path, he_time_path, he_range_path):
+    return {
+        'danmaku': input_file_path,
+        'graph': he_png_path,
+        'he_map': he_list_path,
+        'sc_list': sc_list_path,
+        'sc_srt': sc_srt_path,
+        'he_time': he_time_path,
+        'he_range': he_range_path,
+        'user_xml': None,
+        'user_dict': None,
+        'regex_rules': None
+    }
+
+
+def energy_map_params(params):
+    xml_list = read_danmaku_file(params['danmaku'])
+
+    if params['sc_list'] is not None or params['sc_list'] is not None:
+        sc_chats = [element for element in xml_list if element.tag == 'sc']
+
+        sc_tuple = []
+        for sc_chat_element in sc_chats:
+            try:
+                price = sc_chat_element.attrib['price']
+                raw_message = json.loads(sc_chat_element.attrib['raw'])
+                message = raw_message["message"].replace('\n', '\t')
+                user = raw_message["user_info"]['uname']
+                time = float(sc_chat_element.attrib['ts'])
+                duration = raw_message['time']
+                sc_tuple += [(time, price, message, user, duration)]
+            except:
+                print(f"superchat processing error {sc_chat_element}")
+
+        if params['sc_list'] is not None:
+            if len(sc_tuple) != 0:
+                sc_text = "醒目留言列表："
+                for time, price, message, user, _ in sc_tuple:
+                    sc_text += f"\n {convert_time(int(time))} ¥{price} {user}: {message}"
+                sc_text += "\n"
+                sc_text = segment_text(sc_text)
+            else:
+                sc_text = "没有醒目留言..."
+            with open(params['sc_list'], "w", encoding="utf-8") as file:
+                file.write(sc_text)
+        if params['sc_list'] is not None:
+            active_sc = []
+            subtitles = []
+            cur_time = 0
+
+            def display_sc(start, end, sc_list):
+                display_sorted_sc = sorted(sc_list, key=lambda x: (-float(x[0]), -int(x[2])))
+                content = "\n".join([sc[3] for sc in display_sorted_sc])
+                LIMIT = 100
+                if len(content) >= LIMIT:
+                    content = content[:LIMIT - 2] + "…"
+                return srt.Subtitle(
+                    index=0,
+                    start=timedelta(seconds=start),
+                    end=timedelta(seconds=end),
+                    content=content
+                )
+
+            def flush_sc(start_time: float, end_time: float):
+                current_sc = sorted(active_sc, key=lambda x: x[1])
+                subtitle_list = []
+                while True:
+                    if len(current_sc) == 0:
+                        break
+                    if current_sc[0][1] < end_time:
+                        if current_sc[0][1] - start_time > 1:
+                            subtitle_list += [display_sc(start_time, current_sc[0][1], current_sc)]
+                            start_time = current_sc[0][1]
+                    else:
+                        break
+                    current_sc.pop(0)
+                if end_time - start_time > 1:
+                    subtitle_list += [display_sc(start_time, end_time, current_sc)]
+                    start_time = end_time
+                return current_sc, subtitle_list, start_time
+
+            for time, price, message, user, duration in sc_tuple:
+                start = time
+                end = time + duration * 0.6
+                content = f"¥{price} {user}: {message}".replace("绑架", "**")
+                new_sc, new_subtitles, cur_time = flush_sc(start_time=cur_time,
+                                                           end_time=start)  # Flush all the previous SCs
+                active_sc = new_sc + [(start, end, price, content)]
+                subtitles += new_subtitles
+            if len(active_sc):
+                end_time = max([sc[1] for sc in active_sc])
+                _, new_subtitles, _ = flush_sc(start_time=cur_time, end_time=end_time)
+                subtitles += new_subtitles
+            with open(params['sc_srt'], "w", encoding="utf-8") as file:
+                file.write(srt.compose(subtitles))
+
+    if params['graph'] is not None or params['graph'] is not None or params['he_time'] is not None or params['he_range']:
+        if params['user_dict'] is not None:
+            jieba.load_userdict(params['user_dict'])
+            print(f"User-defined dictionary '{params['user_dict']}' loaded")
+        slices = gen_danmaku_slices(xml_list, 1)
+        wordcount_slices = gen_slice_wordcount(slices)
+        idf_list = gen_idf_dict(wordcount_slices)
+
+        heat_values = get_heat_time(xml_list, idf_list)
+
+        if params['he_range'] is not None:
+            with open(params['he_range'], "w", encoding='utf-8') as file:
+                json.dump(heat_values[4], file)
+
+        if params['he_map'] is not None:
+            he_pairs = heat_values[3]
+            all_timestamps = heat_values[0][0]
+
+            heat_comments = []
+            xml_list_iter = iter(xml_list)
+            tr4s = TextRank4Sentence()
+            for start, end in tqdm(heat_values[4]):
+                comment_list = []
+                while True:
+                    try:
+                        element = next(xml_list_iter)
+                    except StopIteration:
+                        break
+                    if get_time(element) <= start + 0:  # Empirical offset (45s) removed
+                        continue
+                    if get_time(element) > end + 0:  # Empirical offset (45s) removed
+                        break
+                    if element.tag == 'd':
+                        text = element.text
+                        if text is not None and not text.replace(" ", "").replace("哈", "") == "":
+                            comment_list += [text]
+                print(len(comment_list))
+                if len(comment_list) > 1000:
+                    comment_list = random.sample(comment_list, 1000)
+                tr4s.analyze("\n".join(comment_list), lower=True, source='no_filter')
+                key_sentences = tr4s.get_key_sentences(num=1, sentence_min_len=1)
+                if len(key_sentences) > 0:
+                    top_sentence = key_sentences[0]['sentence']
+                else:
+                    top_sentence = ""
+                heat_comments += [top_sentence]
+
+            if len(he_pairs[0]) == 0:
+                text = "没有高能..."
+            else:
+                # noinspection PyTypeChecker
+                highest_id = np.argmax(he_pairs[1])
+                highest_time_id = he_pairs[0][highest_id]
+                highest_time = all_timestamps[highest_time_id]
+                highest_sentence = heat_comments[highest_id]
+
+                other_he_time_list = [all_timestamps[time_id] for time_id in he_pairs[0]]
+
+                text = f"全场最高能：{convert_time(highest_time)}\t{highest_sentence}\n\n其他高能："
+
+                for i, (start_he_time, end_he_time) in enumerate(heat_values[4]):
+                    text += f"\n {convert_time(start_he_time)} - {convert_time(end_he_time)}\t{heat_comments[i]}\t"
+                    text += "("
+                    text += ",".join([kw for kw, value in \
+                                      find_keywords(wordcount_slices, idf_list, (start_he_time, end_he_time),
+                                                    n_keys=3)])
+                    text += ")"
+
+            text += "\n"
+            text = segment_text(text)
+            with open(params['he_map'], "w", encoding='utf-8') as file:
+                file.write(text)
+
+        if params['he_time'] is not None:
+            he_pairs = heat_values[3]
+            all_timestamps = heat_values[0][0]
+            if len(he_pairs[0]) == 0:
+                text = "0"
+            else:
+                # noinspection PyTypeChecker
+                highest_time_id = he_pairs[0][np.argmax(he_pairs[1])]
+                highest_time = all_timestamps[highest_time_id]
+                text = str(highest_time)
+            with open(params['he_time'], "w", encoding='utf-8') as file:
+                file.write(text)
+
+        if params['graph'] is not None:
+            if params['sc_list'] is not None or params['sc_srt'] is not None:
+                draw_he(params['graph'], *heat_values, sc_tuple=sc_tuple)
+            else:
+                draw_he(params['graph'], *heat_values)
+
+    if params['user_xml'] is not None:
+        tree = ET.parse(params['danmaku'])
+        user_cache = {}
+
+        def get_user_follower(user_id):
+            if user_id in user_cache:
+                return user_cache[user_id]
+            else:
+                import bilibili_api
+                user_follower = bilibili_api.user.get_relation_info(user_id)['follower']
+                user_cache[user_id] = user_follower
+                return user_follower
+
+        for child in tqdm(tree.getroot()):
+            try:
+                if child.tag == 'd':
+                    user_name = child.attrib['user']
+                    raw_data = json.loads(child.attrib['raw'])
+                    user_id = raw_data[2][0]
+                    # follower = get_user_follower(user_id)
+                    follower = 0
+                    user_level = raw_data[3][0] if len(raw_data[3]) > 0 else 0
+                    user_boat = raw_data[7]
+                    display_username = follower >= 1000 or user_level > 25 or user_boat >= 2
+                    if display_username:
+                        print(user_name)
+                        child.text = f"@{user_name}:" + child.text
+            except Exception as e:
+                print(e)
+                print(traceback.format_exc())
+        tree.write(params['user_xml'], encoding='UTF-8', xml_declaration=True)
+
 
 def init_args(input_file_path, he_png_path, he_list_path, sc_list_path, sc_srt_path, he_time_path, he_range_path):
     parser = argparse.ArgumentParser(description='Process bilibili Danmaku')
@@ -426,7 +646,7 @@ def init_args(input_file_path, he_png_path, he_list_path, sc_list_path, sc_srt_p
     return parser.parse_args()
 
 
-def energy_map(args):
+def energy_map_args(args):
     xml_list = read_danmaku_file(args.danmaku)
 
     if args.sc_list is not None or args.sc_srt is not None:
@@ -634,4 +854,4 @@ def energy_map(args):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    energy_map(args)
+    energy_map_args(args)
