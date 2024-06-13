@@ -76,6 +76,29 @@ def preprocess_danmaku(danmaku):
     return danmaku
 
 
+def preprocess_danmaku_param(danmaku, regex_rules):
+    """
+    Some ad-hoc processing for danmaku with repeated patterns
+    to allow more consistent word splitting by jieba,
+    substitution rules are specified using --regex_rules
+
+    Keyword arguments:
+    danmaku -- danmaku string
+
+    Returns:
+    danmaku -- danmaku string after processing
+    """
+    if regex_rules is not None:
+        for line in open(regex_rules, 'r', encoding='utf-8'):
+            line = line.strip().split()
+            assert (len(line) == 2)
+            a = danmaku
+            danmaku = re.sub(r"{}".format(line[0]), line[1], danmaku)
+    if danmaku == None:
+        danmaku = ""
+    return danmaku
+
+
 def gen_slice_wordcount(danmaku_slices):
     """
     Count the occurence of words in each danmaku slice
@@ -134,6 +157,30 @@ def gen_danmaku_slices(all_children, interval=1):
     return slices
 
 
+def gen_danmaku_slices_param(all_children, regex_rules, interval=1):
+    """
+    Convert the danmaku list into slices with the prespecified interval
+
+    Keyword arguments:
+    danmaku_list -- list of danmaku, each entry as (danmaku_string, timestamp)
+    interval -- length of each slice (unit: seconds)
+
+    Returns:
+    slices -- slices of danmaku, each entry as a list of danmaku_string within the interval
+    """
+    interval = int(interval)
+    final_time = get_time(all_children[-1])
+    slices = [[] for i in range(int(final_time) // int(interval) + 3)]
+
+    for child in all_children:
+        if child.tag == 'd':
+            if json.loads(child.attrib['raw'])[0][5] != 0:  ### not lucky draw danmaku
+                if int(get_time(child)) // interval < len(slices):
+                    slices[int(get_time(child)) // interval].append(preprocess_danmaku_param(child.text, regex_rules))
+
+    return slices
+
+
 def get_danmaku_value(cur_danmaku, idf_list):
     """
     Get the IDF-weighted value of a given danmaku
@@ -149,6 +196,25 @@ def get_danmaku_value(cur_danmaku, idf_list):
     if cur_danmaku.tag == 'd':
         if json.loads(cur_danmaku.attrib['raw'])[0][5] != 0:  ### not lucky draw danmaku
             for word in jieba.cut(preprocess_danmaku(cur_danmaku.text)):
+                danmaku_value += idf_list[word]
+
+    return danmaku_value
+
+def get_danmaku_value_param(cur_danmaku, idf_list, regex_rules):
+    """
+    Get the IDF-weighted value of a given danmaku
+
+    Keyword arguments:
+    cur_danmaku -- XML element tree child
+    idf_list -- precomputed dictionary containing IDF for all keywords
+
+    Returns:
+    danmaku_value -- value of the input danmaku, calculated by summing up the IDF weights of all keywords
+    """
+    danmaku_value = 0
+    if cur_danmaku.tag == 'd':
+        if json.loads(cur_danmaku.attrib['raw'])[0][5] != 0:  ### not lucky draw danmaku
+            for word in jieba.cut(preprocess_danmaku_param(cur_danmaku.text, regex_rules)):
                 danmaku_value += idf_list[word]
 
     return danmaku_value
@@ -193,6 +259,82 @@ def get_heat_time(all_children, idf_list):
         while len(danmaku_queue) != 0 and get_time(danmaku_queue[0]) < start:
             prev_danmaku = danmaku_queue.popleft()
             cur_heat -= get_danmaku_value(prev_danmaku, idf_list)
+
+        heat_time[0] += [center]
+        heat_time[1] += [cur_heat]
+        center += 1
+
+    heat_value = heat_time[1]
+    heat_value_gaussian = half_gaussian_filter(heat_value, sigma=50)
+    heat_value_gaussian2 = half_gaussian_filter(heat_value, sigma=1000) * 1.2
+
+    he_points = [[], []]
+    cur_highest = -1
+    highest_idx = -1
+    he_start = -1
+    he_range = []
+
+    for i in range(len(heat_value_gaussian)):
+        if highest_idx != -1:
+            assert he_start != -1
+            if heat_value_gaussian[i] < heat_value_gaussian2[i]:
+                he_points[0] += [highest_idx]
+                he_points[1] += [cur_highest]
+                he_range += [(he_start, i)]
+                highest_idx = -1
+                he_start = -1
+            else:
+                if heat_value_gaussian[i] / np.sqrt(heat_value_gaussian2[i]) > cur_highest:
+                    cur_highest = heat_value_gaussian[i] / np.sqrt(
+                        heat_value_gaussian2[i])  ### changed to match with the graph
+                    highest_idx = i
+        else:
+            assert he_start == -1
+            if heat_value_gaussian[i] > heat_value_gaussian2[i]:
+                cur_highest = heat_value_gaussian[i] / np.sqrt(
+                    heat_value_gaussian2[i])  ### changed to match with the graph
+                highest_idx = i
+                he_start = i
+
+    # Usually the HE point at the end of a live stream is just to say goodbye
+    # if highest_idx != -1:
+    #     he_points[0] += [highest_idx]
+    #     he_points[1] += [cur_highest]
+
+    return heat_time, heat_value_gaussian / np.sqrt(heat_value_gaussian2), np.sqrt(
+        heat_value_gaussian2), he_points, he_range
+
+def get_heat_time_param(all_children, idf_list, regex_rules):
+    interval = 2
+
+    center = 0
+
+    cur_entry = 0
+
+    final_time = get_time(all_children[-1])
+
+    cur_heat = 0
+
+    danmaku_queue = deque()
+
+    heat_time = [[], []]
+
+    while True:
+        if center > final_time:
+            break
+
+        start = center - interval
+        end = center + interval
+
+        while cur_entry < len(all_children) and get_time(all_children[cur_entry]) < end:
+            cur_danmaku = all_children[cur_entry]
+            danmaku_queue.append(cur_danmaku)
+            cur_heat += get_danmaku_value_param(cur_danmaku, idf_list, regex_rules)
+            cur_entry += 1
+
+        while len(danmaku_queue) != 0 and get_time(danmaku_queue[0]) < start:
+            prev_danmaku = danmaku_queue.popleft()
+            cur_heat -= get_danmaku_value_param(prev_danmaku, idf_list, regex_rules)
 
         heat_time[0] += [center]
         heat_time[1] += [cur_heat]
@@ -500,18 +642,20 @@ def energy_map_params(params):
                 end_time = max([sc[1] for sc in active_sc])
                 _, new_subtitles, _ = flush_sc(start_time=cur_time, end_time=end_time)
                 subtitles += new_subtitles
-            with open(params['sc_srt'], "w", encoding="utf-8") as file:
-                file.write(srt.compose(subtitles))
+            if params.get('sc_srt') is not None:
+                with open(params['sc_srt'], "w", encoding="utf-8") as file:
+                    file.write(srt.compose(subtitles))
 
-    if params['graph'] is not None or params['graph'] is not None or params['he_time'] is not None or params['he_range']:
+    if params['he_map'] is not None or params['graph'] is not None or params['he_time'] is not None or params[
+        'he_range']:
         if params['user_dict'] is not None:
             jieba.load_userdict(params['user_dict'])
             print(f"User-defined dictionary '{params['user_dict']}' loaded")
-        slices = gen_danmaku_slices(xml_list, 1)
+        slices = gen_danmaku_slices_param(xml_list, params['regex_rules'],1)
         wordcount_slices = gen_slice_wordcount(slices)
         idf_list = gen_idf_dict(wordcount_slices)
 
-        heat_values = get_heat_time(xml_list, idf_list)
+        heat_values = get_heat_time_param(xml_list, idf_list, params['regex_rules'])
 
         if params['he_range'] is not None:
             with open(params['he_range'], "w", encoding='utf-8') as file:
@@ -637,11 +781,13 @@ def init_args(input_file_path, he_png_path, he_list_path, sc_list_path, sc_srt_p
                         help='output high density timestamp, leave empty if not needed')
     parser.add_argument('--sc_list', type=str, default=sc_list_path,
                         help='output super chats, leave empty if not needed')
-    parser.add_argument('--sc_srt', type=str, default=sc_srt_path, help='output super chats srt, leave empty if not needed')
+    parser.add_argument('--sc_srt', type=str, default=sc_srt_path,
+                        help='output super chats srt, leave empty if not needed')
     parser.add_argument('--he_time', type=str, default=he_time_path,
                         help='output highest density timestamp, leave empty if not '
                              'needed')
-    parser.add_argument('--he_range', type=str, default=he_range_path, help='output he_range, leave empty if not needed')
+    parser.add_argument('--he_range', type=str, default=he_range_path,
+                        help='output he_range, leave empty if not needed')
 
     return parser.parse_args()
 
